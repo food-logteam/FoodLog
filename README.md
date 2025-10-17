@@ -1,1 +1,1 @@
-# FoodLog
+# FoodLogTeam
