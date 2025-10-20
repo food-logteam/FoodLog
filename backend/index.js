@@ -9,35 +9,37 @@ const app = express();
 const PORT = 4000;
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
 
-app.use(cors());
-app.use(express.json());
+app.use(cors());             // allow requests from frontend (localhost:5173 etc.)
+app.use(express.json());     // parse JSON bodies
 
 // SQLite database
 const dbPath = path.join(__dirname, "foodlog.sqlite");
 const db = new sqlite3.Database(dbPath);
 
-// Create tables and indexes
+// Create tables and indexes if not exist
 db.serialize(() => {
-  // users table
+  // users table with min_kcal and max_kcal
   db.run(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
+      min_kcal INTEGER,                  -- optional daily minimum target
+      max_kcal INTEGER,                  -- optional daily maximum target
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     )
   `);
 
-  // foods table (linked to users)
+  // foods table linked to users
   db.run(`
     CREATE TABLE IF NOT EXISTS consumed_foods (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
-      date TEXT NOT NULL,           
-      name TEXT NOT NULL,           
-      grams REAL NOT NULL,          
-      kcal REAL NOT NULL,           
+      date TEXT NOT NULL,           -- "YYYY-MM-DD"
+      name TEXT NOT NULL,           -- food name
+      grams REAL NOT NULL,          -- quantity in grams
+      kcal REAL NOT NULL,           -- (kcal_100g/100)*grams
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
       FOREIGN KEY (user_id) REFERENCES users(id)
     )
@@ -47,6 +49,13 @@ db.serialize(() => {
   db.run(`CREATE INDEX IF NOT EXISTS idx_cf_user_date ON consumed_foods(user_id, date)`);
 });
 
+// Lightweight migration to add min_kcal/max_kcal if DB existed before
+db.all(`PRAGMA table_info(users)`, [], (err, rows) => {
+  if (err) return;
+  const names = rows.map(r => r.name);
+  if (!names.includes("min_kcal")) db.run(`ALTER TABLE users ADD COLUMN min_kcal INTEGER`);
+  if (!names.includes("max_kcal")) db.run(`ALTER TABLE users ADD COLUMN max_kcal INTEGER`);
+});
 
 // Auth middleware
 function requireAuth(req, res, next) {
@@ -66,16 +75,19 @@ function requireAuth(req, res, next) {
 
 // Auth routes
 
-// Register new user
+// POST /auth/register  Body: { name, email, password, min_kcal?, max_kcal? }
 app.post("/auth/register", (req, res) => {
-  const { name, email, password } = req.body || {};
+  const { name, email, password, min_kcal = null, max_kcal = null } = req.body || {};
   if (!name || !email || !password)
     return res.status(400).json({ error: "Missing fields (name, email, password)" });
 
   const password_hash = bcrypt.hashSync(String(password), 10);
-  const sql = `INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)`;
+  const sql = `
+    INSERT INTO users (name, email, password_hash, min_kcal, max_kcal)
+    VALUES (?, ?, ?, ?, ?)
+  `;
 
-  db.run(sql, [name, email, password_hash], function (err) {
+  db.run(sql, [name, email, password_hash, min_kcal, max_kcal], function (err) {
     if (err) {
       if (String(err.message).includes("UNIQUE")) {
         return res.status(409).json({ error: "Email already in use" });
@@ -84,11 +96,11 @@ app.post("/auth/register", (req, res) => {
     }
     const userId = this.lastID;
     const token = jwt.sign({ sub: userId }, JWT_SECRET, { expiresIn: "7d" });
-    res.status(201).json({ id: userId, name, email, token });
+    res.status(201).json({ id: userId, name, email, min_kcal, max_kcal, token });
   });
 });
 
-// Login user
+// POST /auth/login  Body: { email, password }
 app.post("/auth/login", (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password)
@@ -102,7 +114,57 @@ app.post("/auth/login", (req, res) => {
     if (!ok) return res.status(401).json({ error: "Invalid credentials" });
 
     const token = jwt.sign({ sub: user.id }, JWT_SECRET, { expiresIn: "7d" });
-    res.json({ id: user.id, name: user.name, email: user.email, token });
+    res.json({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      min_kcal: user.min_kcal ?? null,
+      max_kcal: user.max_kcal ?? null,
+      token
+    });
+  });
+});
+
+// Profile routes (protected)
+
+// GET /me  -> returns current user profile (id, name, email, min_kcal, max_kcal)
+app.get("/me", requireAuth, (req, res) => {
+  db.get(
+    `SELECT id, name, email, min_kcal, max_kcal FROM users WHERE id = ?`,
+    [req.user.id],
+    (err, u) => {
+      if (err) return res.status(500).json({ error: err.message });
+      if (!u) return res.status(404).json({ error: "User not found" });
+      res.json(u);
+    }
+  );
+});
+
+// PUT /me  Body: { name?, min_kcal?, max_kcal? } -> updates profile
+app.put("/me", requireAuth, (req, res) => {
+  const { name, min_kcal, max_kcal } = req.body || {};
+  const fields = [];
+  const values = [];
+
+  if (typeof name === "string" && name.trim()) { fields.push("name = ?"); values.push(name.trim()); }
+  if (min_kcal !== undefined) { fields.push("min_kcal = ?"); values.push(min_kcal === null ? null : Number(min_kcal)); }
+  if (max_kcal !== undefined) { fields.push("max_kcal = ?"); values.push(max_kcal === null ? null : Number(max_kcal)); }
+
+  if (!fields.length) return res.status(400).json({ error: "No fields to update" });
+
+  const sql = `UPDATE users SET ${fields.join(", ")} WHERE id = ?`;
+  values.push(req.user.id);
+
+  db.run(sql, values, function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    db.get(
+      `SELECT id, name, email, min_kcal, max_kcal FROM users WHERE id = ?`,
+      [req.user.id],
+      (err2, u) => {
+        if (err2) return res.status(500).json({ error: err2.message });
+        res.json(u);
+      }
+    );
   });
 });
 
@@ -113,11 +175,10 @@ app.get("/health", (_, res) => {
 
 app.get("/", (_, res) => res.send("FoodLog API is running"));
 
-// ===============================
-// Protected routes (/day)
-// ===============================
+// Day routes (protected, per user)
 
 // GET /day?date=YYYY-MM-DD
+// Returns items, total_kcal and user_targets {min_kcal, max_kcal} plus status
 app.get("/day", requireAuth, (req, res) => {
   const { date } = req.query;
   if (!date) return res.status(400).json({ error: "Missing date (format: YYYY-MM-DD)" });
@@ -133,21 +194,40 @@ app.get("/day", requireAuth, (req, res) => {
     FROM consumed_foods
     WHERE user_id = ? AND date = ?
   `;
+  const userSql = `
+    SELECT min_kcal, max_kcal
+    FROM users
+    WHERE id = ?
+  `;
 
   db.all(listSql, [req.user.id, date], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     db.get(totalSql, [req.user.id, date], (err2, totalRow) => {
       if (err2) return res.status(500).json({ error: err2.message });
-      res.json({
-        date,
-        items: rows,
-        total_kcal: totalRow ? totalRow.total_kcal : 0
+      const total_kcal = totalRow ? totalRow.total_kcal : 0;
+
+      db.get(userSql, [req.user.id], (err3, u) => {
+        if (err3) return res.status(500).json({ error: err3.message });
+        const targets = { min_kcal: u?.min_kcal ?? null, max_kcal: u?.max_kcal ?? null };
+
+        let status = null; // "below" | "within" | "above" | null
+        if (targets.min_kcal != null && total_kcal < targets.min_kcal) status = "below";
+        else if (targets.max_kcal != null && total_kcal > targets.max_kcal) status = "above";
+        else if (targets.min_kcal != null || targets.max_kcal != null) status = "within";
+
+        res.json({
+          date,
+          items: rows,
+          total_kcal,
+          user_targets: targets,
+          status
+        });
       });
     });
   });
 });
 
-// POST /day
+// POST /day  Body: { date, name, grams, kcal_100g }
 app.post("/day", requireAuth, (req, res) => {
   const { date, name, grams, kcal_100g } = req.body || {};
   if (!date || !name || !grams || !kcal_100g)
@@ -162,7 +242,7 @@ app.post("/day", requireAuth, (req, res) => {
   });
 });
 
-// PUT /day/:id
+// PUT /day/:id  Body: { grams, kcal_100g }
 app.put("/day/:id", requireAuth, (req, res) => {
   const { grams, kcal_100g } = req.body || {};
   if (!grams || !kcal_100g)
@@ -188,7 +268,6 @@ app.delete("/day/:id", requireAuth, (req, res) => {
 
 
 // Start server
-
 app.listen(PORT, () => {
   console.log(`FoodLog backend running on http://localhost:${PORT}`);
 });
