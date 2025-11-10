@@ -663,24 +663,4 @@ body{
 .food-meta{ color: var(--muted); font-size: 13px; }
 .food-kcal{ font-weight: 700; }
 
-/* Calendar dot status */
-.cal-cell {
-  position: relative; /* to anchor the dot */
-}
 
-/* small dot in bottom-right */
-.cal-dot {
-  position: absolute;
-  right: 6px;
-  bottom: 6px;
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  box-shadow: 0 0 0 2px #fff; /* ring to stand out on selection */
-}
-
-/* palette aligned with app */
-.cal-dot.within  { background: #10b981; } /* green */
-.cal-dot.below   { background: #f59e0b; } /* amber */
-.cal-dot.above   { background: #ef4444; } /* red */
-.cal-dot.planned { background: #0ea5e9; } /* blue */
