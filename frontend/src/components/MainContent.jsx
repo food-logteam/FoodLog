@@ -1,7 +1,22 @@
 // NOTE: no diacritics in comments
 import { Plus, History, Calendar } from 'lucide-react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { getCurrentUser } from '../lib/api.js';
 
 export default function MainContent() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const user = getCurrentUser();
+
+  function go(to) {
+    if (!user) {
+      // send to signin and return after
+      navigate('/auth/signin', { state: { from: to || location.pathname } });
+      return;
+    }
+    navigate(to);
+  }
+
   return (
     <main>
       <section className="container">
@@ -15,51 +30,56 @@ export default function MainContent() {
         </div>
 
         {/* actions */}
-<div className="actions" style={{display:'flex', flexDirection:'column', alignItems:'center'}}>
-  <button className="btn btn-primary wide" onClick={()=>console.log('add meal')}>
-    <Plus width={18} height={18} />
-    Add Meal
-  </button>
+        <div className="actions" style={{display:'flex', flexDirection:'column', alignItems:'center'}}>
+          <button className="btn btn-primary wide" onClick={() => go('/add-today')}>
+            <Plus width={18} height={18} />
+            Add Meal
+          </button>
 
-  <div className="actions-inline">
-    <button className="btn btn-history" onClick={()=>console.log('history')}>
-      <History width={18} height={18} />
-      History
-    </button>
-    <button className="btn btn-future" onClick={()=>console.log('future')}>
-      <Calendar width={18} height={18} />
-      Future
-    </button>
-  </div>
-</div>
-
-
-        {/* features */}
-        <div className="features">
-          <div className="feature">
-            <div className="icon-circle icon-teal">
-              <Plus width={20} height={20} />
-            </div>
-            <div className="title">Track Meals</div>
-            <div className="text">Log your daily meals and snacks</div>
-          </div>
-
-          <div className="feature">
-            <div className="icon-circle icon-sky">
-              <History width={20} height={20} />
-            </div>
-            <div className="title">View History</div>
-            <div className="text">Review your eating patterns</div>
-          </div>
-
-          <div className="feature">
-            <div className="icon-circle icon-cyan">
-              <Calendar width={20} height={20} />
-            </div>
-            <div className="title">Plan Ahead</div>
-            <div className="text">Schedule future meals</div>
+          <div className="actions-inline">
+            <button className="btn btn-history" onClick={() => go('/history')}>
+              <History width={18} height={18} />
+              History
+            </button>
+            <button className="btn btn-future" onClick={() => go('/future')}>
+              <Calendar width={18} height={18} />
+              Future
+            </button>
           </div>
         </div>
+
+        {/* features */}
+        <section className="features">
+          <article className="feature-card">
+            <div className="feature-head">
+              <div className="icon-badge icon-teal">
+                <Plus width={18} height={18} />
+              </div>
+              <h3 className="feature-title">Track Meals</h3>
+            </div>
+            <p className="feature-text">Log your daily meals and snacks.</p>
+          </article>
+
+          <article className="feature-card">
+            <div className="feature-head">
+              <div className="icon-badge icon-sky">
+                <History width={18} height={18} />
+              </div>
+              <h3 className="feature-title">View History</h3>
+            </div>
+            <p className="feature-text">Review your eating patterns.</p>
+          </article>
+
+          <article className="feature-card">
+            <div className="feature-head">
+              <div className="icon-badge icon-cyan">
+                <Calendar width={18} height={18} />
+              </div>
+              <h3 className="feature-title">Plan Ahead</h3>
+            </div>
+            <p className="feature-text">Schedule future meals.</p>
+          </article>
+        </section>
       </section>
     </main>
   );

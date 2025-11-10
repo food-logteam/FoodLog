@@ -1,30 +1,55 @@
 // NOTE: no diacritics in comments
 import { Utensils, User } from 'lucide-react';
-import { Link, useNavigate } from 'react-router-dom';
-import { getCurrentUser, logout } from '../lib/api.js';
+import { useNavigate } from 'react-router-dom';
+import { getCurrentUser } from '../lib/api.js';
 
 export default function Header() {
-  const user = getCurrentUser();
   const navigate = useNavigate();
+  const user = getCurrentUser();
 
   return (
-    <header className="header">
+    <header className="header bg-page">
       <div className="container header-row">
-        <div className="brand">
+        {/* Brand / logo — now clickable */}
+        <button
+          className="brand"
+          onClick={() => navigate('/')}
+          title="Go to home"
+          style={{
+            background: 'transparent',
+            border: 'none',
+            cursor: 'pointer',
+            padding: 0,
+          }}
+        >
           <div className="brand-badge"><Utensils /></div>
           <span className="brand-name">FoodLog</span>
-        </div>
+        </button>
 
+        {/* Right side: profile or auth buttons */}
         {!user ? (
-          <div className="profile" style={{ display:'flex', gap: '8px' }}>
-            <Link to="/auth/signin" className="icon-btn" title="Sign in">In</Link>
-            <Link to="/auth/signup" className="icon-btn" title="Sign up">Up</Link>
+          <div className="profile" style={{ display: 'flex', gap: '12px' }}>
+            <button
+              className="btn-sky"
+              onClick={() => navigate('/auth/signin')}
+              style={{ fontSize: '15px', padding: '10px 22px', fontWeight: 600 }}
+            >
+              Sign in
+            </button>
+            <button
+              className="btn-cyan"
+              onClick={() => navigate('/auth/signup')}
+              style={{ fontSize: '15px', padding: '10px 22px', fontWeight: 600 }}
+            >
+              Sign up
+            </button>
           </div>
         ) : (
           <button
             className="icon-btn profile"
-            title="Logout"
-            onClick={() => { logout(); navigate(0); }}
+            title="Account"
+            onClick={() => navigate('/account')}
+            aria-label="Profile"
           >
             <User />
           </button>
