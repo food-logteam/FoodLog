@@ -5,34 +5,65 @@ import Header from '../components/Header.jsx';
 import { getCurrentUser } from '../lib/api.js';
 import { getDay, addFood, updateFood, deleteFood } from '../lib/day.js';
 import { searchFoods } from '../lib/foods.js';
-import { saveNote, deleteNote } from '../lib/notes.js';
 import { Plus, Trash2, Pencil, Check, X } from 'lucide-react';
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
+
+// helper: compute macros per entry from *_100g columns
+function withMacrosFrom100g(raw) {
+  const {
+    protein_100g = null,
+    carbs_100g = null,
+    fat_100g = null,
+    grams,
+    ...rest
+  } = raw || {};
+  const g = Number(grams);
+
+  let protein = null;
+  let carbs = null;
+  let fat = null;
+
+  if (protein_100g != null && Number.isFinite(g) && g > 0) {
+    protein = Number(((Number(protein_100g) / 100) * g).toFixed(1));
+  }
+  if (carbs_100g != null && Number.isFinite(g) && g > 0) {
+    carbs = Number(((Number(carbs_100g) / 100) * g).toFixed(1));
+  }
+  if (fat_100g != null && Number.isFinite(g) && g > 0) {
+    fat = Number(((Number(fat_100g) / 100) * g).toFixed(1));
+  }
+
+  return {
+    ...rest,
+    grams: g,
+    protein_100g: protein_100g != null ? Number(protein_100g) : null,
+    carbs_100g: carbs_100g != null ? Number(carbs_100g) : null,
+    fat_100g: fat_100g != null ? Number(fat_100g) : null,
+    protein,
+    carbs,
+    fat,
+  };
+}
 
 export default function AddToday() {
   const navigate = useNavigate();
   const [date] = useState(todayStr());
 
-  const [items, setItems] = useState([]);
+  const [items, setItems] = useState([]);             // list for today
   const [total, setTotal] = useState(0);
-  const [status, setStatus] = useState(null);
+  const [status, setStatus] = useState(null);         // below | within | above | null
   const [loading, setLoading] = useState(true);
 
-  // note state
-  const [note, setNote] = useState('');
-  const [noteSaving, setNoteSaving] = useState(false);
-  const [noteMsg, setNoteMsg] = useState('');
-
-  // add form
+  // form (single row below the list)
   const [query, setQuery] = useState('');
-  const [selected, setSelected] = useState(null); // {label, kcal_100g}
+  const [selected, setSelected] = useState(null);     // { label, kcal_100g, protein_100g, carbs_100g, fat_100g }
   const [suggestions, setSuggestions] = useState([]);
   const [open, setOpen] = useState(false);
   const [grams, setGrams] = useState('');
   const [adding, setAdding] = useState(false);
 
-  // inline edit
+  // inline edit state
   const [editingId, setEditingId] = useState(null);
   const [editGrams, setEditGrams] = useState('');
 
@@ -42,18 +73,18 @@ export default function AddToday() {
     return Number(((selected.kcal_100g / 100) * g).toFixed(1));
   }, [grams, selected]);
 
-  // load day data
   useEffect(() => {
     const u = getCurrentUser();
     if (!u) { navigate('/auth/signin'); return; }
-
     (async () => {
       try {
         const d = await getDay(date);
-        setItems(Array.isArray(d.items) ? d.items : []);
+        const mapped = Array.isArray(d.items)
+          ? d.items.map(withMacrosFrom100g)
+          : [];
+        setItems(mapped);
         setTotal(Number(d.total_kcal || 0));
         setStatus(d.status || null);
-        setNote(d.note || ''); // note from backend /day
       } finally {
         setLoading(false);
       }
@@ -70,31 +101,12 @@ export default function AddToday() {
 
   async function refreshTotals() {
     const d = await getDay(date);
+    const mapped = Array.isArray(d.items)
+      ? d.items.map(withMacrosFrom100g)
+      : [];
+    setItems(mapped);
     setTotal(Number(d.total_kcal || 0));
     setStatus(d.status || null);
-    setNote(d.note || '');
-  }
-
-  // save / clear note for today
-  async function handleSaveNote() {
-    setNoteSaving(true);
-    setNoteMsg('');
-    try {
-      const trimmed = note.trim();
-      if (trimmed) {
-        await saveNote(date, trimmed);
-        setNote(trimmed);
-        setNoteMsg('Note saved');
-      } else {
-        await deleteNote(date);
-        setNote('');
-        setNoteMsg('Note cleared');
-      }
-    } catch (e) {
-      setNoteMsg(e.message || 'Failed to save note');
-    } finally {
-      setNoteSaving(false);
-    }
   }
 
   // search debounce
@@ -118,24 +130,42 @@ export default function AddToday() {
     if (!selected || !grams) return;
     setAdding(true);
     try {
+      const g = Number(grams);
+
       const payload = {
         date,
         name: selected.label,
-        grams: Number(grams),
+        grams: g,
         kcal_100g: Number(selected.kcal_100g),
+        protein_100g: selected.protein_100g ?? null,
+        carbs_100g: selected.carbs_100g ?? null,
+        fat_100g: selected.fat_100g ?? null,
       };
       const res = await addFood(payload); // { id, kcal }
 
-      const newItem = { id: res.id, name: payload.name, grams: payload.grams, kcal: Number(res.kcal) };
+      const baseItem = {
+        id: res.id,
+        name: payload.name,
+        grams: payload.grams,
+        kcal: Number(res.kcal),
+        protein_100g: payload.protein_100g,
+        carbs_100g: payload.carbs_100g,
+        fat_100g: payload.fat_100g,
+      };
+
+      const newItem = withMacrosFrom100g(baseItem);
+
       setItems(prev => [newItem, ...prev]);
       await refreshTotals();
       setGrams('');
+      setSelected(null);
+      setQuery('');
     } finally {
       setAdding(false);
     }
   }
 
-  // inline edit helpers
+  // ---- Inline edit helpers ----
   function startEdit(item) {
     setEditingId(item.id);
     setEditGrams(String(item.grams));
@@ -158,10 +188,19 @@ export default function AddToday() {
   async function saveEdit(item) {
     const g = Number(editGrams);
     if (!Number.isFinite(g) || g <= 0) return;
-    const kcal_100g = Number(kcal100FromItem(item).toFixed(6));
-    const res = await updateFood({ id: item.id, grams: g, kcal_100g });
+    const kcal_100g = Number(kcal100FromItem(item).toFixed(6)); // stable per item
+    const res = await updateFood({ id: item.id, grams: g, kcal_100g }); // { kcal }
+
     setItems(prev =>
-      prev.map(it => it.id === item.id ? { ...it, grams: g, kcal: Number(res.kcal) } : it)
+      prev.map(it => {
+        if (it.id !== item.id) return it;
+        const updatedBase = {
+          ...it,
+          grams: g,
+          kcal: Number(res.kcal),
+        };
+        return withMacrosFrom100g(updatedBase);
+      })
     );
     setEditingId(null);
     setEditGrams('');
@@ -211,10 +250,26 @@ export default function AddToday() {
                   <div
                     key={item.id}
                     className="auth-card"
-                    style={{ display:'grid', gridTemplateColumns:'1fr 140px 120px 80px 80px', gap:10, alignItems:'center' }}
+                    style={{
+                      display:'grid',
+                      gridTemplateColumns:'2.5fr 110px 110px 80px 80px',
+                      gap:10,
+                      alignItems:'center'
+                    }}
                   >
-                    <div style={{ fontWeight:600 }}>{item.name}</div>
+                    {/* name + macros */}
+                    <div>
+                      <div style={{ fontWeight:600 }}>{item.name}</div>
+                      {item.protein != null && item.carbs != null && item.fat != null && (
+                        <div style={{ marginTop: 4, fontSize: 12 }}>
+                          <div style={{ color: '#ef4444' }}>Proteins {item.protein} g</div>
+                          <div style={{ color: '#3b82f6' }}>Carbs {item.carbs} g</div>
+                          <div style={{ color: '#22c55e' }}>Fats {item.fat} g</div>
+                        </div>
+                      )}
+                    </div>
 
+                    {/* grams cell */}
                     {!isEditing ? (
                       <div style={{ color:'#334155' }}>{item.grams} g</div>
                     ) : (
@@ -228,8 +283,10 @@ export default function AddToday() {
                       />
                     )}
 
+                    {/* kcal cell */}
                     <div style={{ fontWeight:700 }}>{nextKcal} kcal</div>
 
+                    {/* actions */}
                     {!isEditing ? (
                       <>
                         <button className="icon-btn" title="Edit" onClick={() => startEdit(item)}>
@@ -267,7 +324,7 @@ export default function AddToday() {
 
           <div
             className="auth-card"
-            style={{ display:'grid', gridTemplateColumns:'1.8fr 120px 140px 120px', gap:10, alignItems:'center' }}
+            style={{ display:'grid', gridTemplateColumns:'2.4fr 120px 140px 120px', gap:10, alignItems:'center' }}
           >
             {/* food input with suggestions */}
             <div style={{ position:'relative' }}>
@@ -283,7 +340,9 @@ export default function AddToday() {
                   {suggestions.map((s, i) => (
                     <button key={i} className="suggest-item" onClick={() => pick(s)}>
                       <span>{s.label}</span>
-                      <span className="suggest-kcal">{s.kcal_100g} kcal/100g</span>
+                      <span className="suggest-kcal">
+                        {s.kcal_100g} kcal/100g
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -314,46 +373,6 @@ export default function AddToday() {
             <button className="btn btn-primary" onClick={handleAdd} disabled={adding || !selected || !grams}>
               {adding ? 'Adding…' : 'Add'}
             </button>
-          </div>
-        </section>
-
-        {/* ---- NOTE FOR TODAY ---- */}
-        <section style={{ marginTop: 14 }}>
-          <div className="auth-card" style={{ display:'flex', flexDirection:'column', gap:8 }}>
-            <label htmlFor="day-note" style={{ fontWeight:600, fontSize:14 }}>
-              Note for today
-            </label>
-            <textarea
-              id="day-note"
-              rows={3}
-              value={note}
-              onChange={(e) => { setNote(e.target.value); setNoteMsg(''); }}
-              className="food-input"
-              style={{ resize:'vertical', minHeight:70 }}
-              placeholder="How did you feel today? Any special meals or comments?"
-            />
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:4 }}>
-              {noteMsg && (
-                <span
-                  style={{
-                    fontSize:13,
-                    color: noteMsg.includes('Failed') ? '#ef4444' : '#0d9488',
-                    fontWeight:500,
-                  }}
-                >
-                  {noteMsg}
-                </span>
-              )}
-              <button
-                type="button"
-                className="btn btn-primary"
-                style={{ padding:'8px 18px', fontSize:14 }}
-                onClick={handleSaveNote}
-                disabled={noteSaving}
-              >
-                {noteSaving ? 'Saving…' : 'Save note'}
-              </button>
-            </div>
           </div>
         </section>
       </div>

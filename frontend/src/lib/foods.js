@@ -4,7 +4,7 @@ const API = import.meta.env.VITE_API_URL || 'http://localhost:4000';
 
 /**
  * Query backend /foods/search (protected)
- * returns [{ name, kcal_100g }, ...]
+ * returns [{ label, kcal_100g, protein_100g, carbs_100g, fat_100g }, ...]
  */
 export async function searchFoods(query, { limit = 10, onlyGeneric = true } = {}) {
   const q = (query || '').trim();
@@ -22,7 +22,15 @@ export async function searchFoods(query, { limit = 10, onlyGeneric = true } = {}
     console.error('foods/search error:', data);
     return [];
   }
+
   const items = Array.isArray(data?.items) ? data.items : [];
-  // normalize to { label, kcal_100g } like before
-  return items.map(i => ({ label: i.name, kcal_100g: i.kcal_100g }));
+
+  // backend items are expected to have: name, kcal_100g, protein_100g, carbs_100g, fat_100g
+  return items.map(i => ({
+    label: i.name,
+    kcal_100g: i.kcal_100g,
+    protein_100g: i.protein_100g ?? null,
+    carbs_100g: i.carbs_100g ?? null,
+    fat_100g: i.fat_100g ?? null,
+  }));
 }

@@ -8,17 +8,21 @@ export async function getDay(date) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Failed to load day');
-  return data; // { date, items, total_kcal, user_targets, status }
+  // backend now returns:
+  // { date, items:[{ id, name, grams, kcal, protein_100g, carbs_100g, fat_100g }...],
+  //   total_kcal, user_targets, status, note }
+  return data;
 }
 
-export async function addFood({ date, name, grams, kcal_100g }) {
+// payload can include optional macros per 100g
+export async function addFood(payload) {
   const res = await fetch(`${API}/day`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${getToken()}`,
     },
-    body: JSON.stringify({ date, name, grams, kcal_100g }),
+    body: JSON.stringify(payload),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || 'Add failed');

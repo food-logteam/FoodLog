@@ -17,6 +17,43 @@ function toYMD(d) {
 }
 function jsDayToMonFirst(jsDay) { return (jsDay + 6) % 7; }
 
+// helper: compute macros per entry from *_100g columns
+function withMacrosFrom100g(raw) {
+  const {
+    protein_100g = null,
+    carbs_100g = null,
+    fat_100g = null,
+    grams,
+    ...rest
+  } = raw || {};
+  const g = Number(grams);
+
+  let protein = null;
+  let carbs = null;
+  let fat = null;
+
+  if (protein_100g != null && Number.isFinite(g) && g > 0) {
+    protein = Number(((Number(protein_100g) / 100) * g).toFixed(1));
+  }
+  if (carbs_100g != null && Number.isFinite(g) && g > 0) {
+    carbs = Number(((Number(carbs_100g) / 100) * g).toFixed(1));
+  }
+  if (fat_100g != null && Number.isFinite(g) && g > 0) {
+    fat = Number(((Number(fat_100g) / 100) * g).toFixed(1));
+  }
+
+  return {
+    ...rest,
+    grams: g,
+    protein_100g: protein_100g != null ? Number(protein_100g) : null,
+    carbs_100g: carbs_100g != null ? Number(carbs_100g) : null,
+    fat_100g: fat_100g != null ? Number(fat_100g) : null,
+    protein,
+    carbs,
+    fat,
+  };
+}
+
 export default function Future() {
   // calendar state
   const [month, setMonth] = useState(() => {
@@ -39,7 +76,8 @@ export default function Future() {
 
   // add form
   const [query, setQuery] = useState('');
-  const [selectedFood, setSelectedFood] = useState(null); // { label, kcal_100g }
+  // selectedFood now includes macros per 100g from searchFoods
+  const [selectedFood, setSelectedFood] = useState(null); // { label, kcal_100g, protein_100g?, carbs_100g?, fat_100g? }
   const [suggestions, setSuggestions] = useState([]);
   const [open, setOpen] = useState(false);
   const [grams, setGrams] = useState('');
@@ -81,7 +119,12 @@ export default function Future() {
       setErr('');
       const ymd = toYMD(d);
       const data = await getDay(ymd);
-      setItems(Array.isArray(data.items) ? data.items : []);
+
+      const mappedItems = Array.isArray(data.items)
+        ? data.items.map(withMacrosFrom100g)
+        : [];
+
+      setItems(mappedItems);
       setTotal(Number(data.total_kcal || 0));
       setStatus(data.status || null);
       setNote(data.note || '');
@@ -139,14 +182,29 @@ export default function Future() {
     if (!selectedFood || !grams) return;
     setAdding(true);
     try{
+      const g = Number(grams);
       const payload = {
         date: toYMD(selected),
         name: selectedFood.label,
-        grams: Number(grams),
+        grams: g,
         kcal_100g: Number(selectedFood.kcal_100g),
+        protein_100g: selectedFood.protein_100g ?? null,
+        carbs_100g: selectedFood.carbs_100g ?? null,
+        fat_100g: selectedFood.fat_100g ?? null,
       };
       const res = await addFood(payload); // { id, kcal }
-      const newItem = { id: res.id, name: payload.name, grams: payload.grams, kcal: Number(res.kcal) };
+
+      const baseItem = {
+        id: res.id,
+        name: payload.name,
+        grams: g,
+        kcal: Number(res.kcal),
+        protein_100g: payload.protein_100g,
+        carbs_100g: payload.carbs_100g,
+        fat_100g: payload.fat_100g,
+      };
+      const newItem = withMacrosFrom100g(baseItem);
+
       setItems(prev => [newItem, ...prev]);
       await refreshTotals();
       setGrams('');
@@ -173,7 +231,18 @@ export default function Future() {
     if (!Number.isFinite(g) || g <= 0) return;
     const kcal_100g = Number(kcal100FromItem(item).toFixed(6));
     const res = await updateFood({ id: item.id, grams: g, kcal_100g });
-    setItems(prev => prev.map(it => it.id === item.id ? { ...it, grams: g, kcal: Number(res.kcal) } : it));
+
+    setItems(prev =>
+      prev.map(it => {
+        if (it.id !== item.id) return it;
+        const updatedBare = {
+          ...it,
+          grams: g,
+          kcal: Number(res.kcal),
+        };
+        return withMacrosFrom100g(updatedBare);
+      })
+    );
     setEditingId(null); setEditGrams('');
     await refreshTotals();
   }
@@ -291,12 +360,22 @@ export default function Future() {
                         className="auth-card"
                         style={{
                           display:'grid',
-                          gridTemplateColumns:'2.5fr 90px 120px 80px 80px',  // widened name, compact grams
+                          gridTemplateColumns:'3.5fr 70px 100px 70px 70px',  // wider name, slightly smaller others
                           gap:10,
                           alignItems:'center'
                         }}
                       >
-                        <div style={{ fontWeight:600 }}>{item.name}</div>
+                        {/* name + macros */}
+                        <div>
+                          <div style={{ fontWeight:600 }}>{item.name}</div>
+                          {item.protein != null && item.carbs != null && item.fat != null && (
+                            <div style={{ marginTop: 4, fontSize: 12 }}>
+                              <div style={{ color: '#ef4444' }}>Proteins {item.protein} g</div>
+                              <div style={{ color: '#3b82f6' }}>Carbs {item.carbs} g</div>
+                              <div style={{ color: '#22c55e' }}>Fats {item.fat} g</div>
+                            </div>
+                          )}
+                        </div>
 
                         {!isEditing ? (
                           <div style={{ color:'#334155' }}>{item.grams} g</div>
@@ -352,7 +431,7 @@ export default function Future() {
                 className="auth-card"
                 style={{
                   display:'grid',
-                  gridTemplateColumns:'2.5fr 90px 120px 120px',   // wider name, smaller grams
+                  gridTemplateColumns:'3fr 80px 110px 110px',   // wider name, smaller grams and kcal box
                   gap:10,
                   alignItems:'center'
                 }}
@@ -405,7 +484,6 @@ export default function Future() {
               </div>
             </section>
 
-            
             {/* note for this planned day */}
             <div
               className="auth-card"

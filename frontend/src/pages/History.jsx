@@ -21,6 +21,43 @@ function jsDayToMonFirst(jsDay) {
   return (jsDay + 6) % 7;
 }
 
+// helper: compute macros per entry from *_100g columns
+function withMacrosFrom100g(raw) {
+  const {
+    protein_100g = null,
+    carbs_100g = null,
+    fat_100g = null,
+    grams,
+    ...rest
+  } = raw || {};
+  const g = Number(grams);
+
+  let protein = null;
+  let carbs = null;
+  let fat = null;
+
+  if (protein_100g != null && Number.isFinite(g) && g > 0) {
+    protein = Number(((Number(protein_100g) / 100) * g).toFixed(1));
+  }
+  if (carbs_100g != null && Number.isFinite(g) && g > 0) {
+    carbs = Number(((Number(carbs_100g) / 100) * g).toFixed(1));
+  }
+  if (fat_100g != null && Number.isFinite(g) && g > 0) {
+    fat = Number(((Number(fat_100g) / 100) * g).toFixed(1));
+  }
+
+  return {
+    ...rest,
+    grams: g,
+    protein_100g: protein_100g != null ? Number(protein_100g) : null,
+    carbs_100g: carbs_100g != null ? Number(carbs_100g) : null,
+    fat_100g: fat_100g != null ? Number(fat_100g) : null,
+    protein,
+    carbs,
+    fat,
+  };
+}
+
 export default function History() {
   const [month, setMonth] = useState(() => {
     const now = new Date();
@@ -67,7 +104,12 @@ export default function History() {
       setLoading(true);
       setErr('');
       const data = await getDay(ymd);
-      setDayData(data);
+
+      const mappedItems = Array.isArray(data.items)
+        ? data.items.map(withMacrosFrom100g)
+        : [];
+
+      setDayData({ ...data, items: mappedItems });
       setNote(data.note || '');
       setNoteMsg('');
     } catch (e) {
@@ -250,7 +292,16 @@ export default function History() {
                     <ul className="food-list">
                       {dayData.items.map((it) => (
                         <li key={it.id} className="food-row">
-                          <div className="food-name">{it.name}</div>
+                          <div className="food-name">
+                            <div style={{ fontWeight: 600 }}>{it.name}</div>
+                            {it.protein != null && it.carbs != null && it.fat != null && (
+                              <div style={{ marginTop: 4, fontSize: 12 }}>
+                                <div style={{ color: '#ef4444' }}>Proteins {it.protein} g</div>
+                                <div style={{ color: '#3b82f6' }}>Carbs {it.carbs} g</div>
+                                <div style={{ color: '#22c55e' }}>Fats {it.fat} g</div>
+                              </div>
+                            )}
+                          </div>
                           <div className="food-meta">{it.grams} g</div>
                           <div className="food-kcal">{it.kcal}</div>
                         </li>
