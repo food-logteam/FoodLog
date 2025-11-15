@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Header from '../components/Header.jsx';
 import { getDay } from '../lib/day.js';
 import { getToken } from '../lib/api.js';
+import { saveNote, deleteNote } from '../lib/notes.js';
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
@@ -31,7 +32,12 @@ export default function History() {
   const [err, setErr] = useState('');
   const [dayData, setDayData] = useState(null);
 
-  // protect route (simple): if no token, backend or router already blocks, dar verificam ca sa nu mai apelam API
+  // note state for selected date
+  const [note, setNote] = useState('');
+  const [noteSaving, setNoteSaving] = useState(false);
+  const [noteMsg, setNoteMsg] = useState('');
+
+  // protect route (simple): if no token, backend or router already blocks, but we prevent API calls
   const hasToken = !!getToken();
 
   const calendarCells = useMemo(() => {
@@ -45,13 +51,12 @@ export default function History() {
     const cells = [];
     for (let i = 0; i < padStart; i++) cells.push(null); // leading blanks
     for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(y, m, d));
-    // optionally pad end to complete rows of 7 (looks nicer)
+    // pad end to complete rows of 7
     while (cells.length % 7 !== 0) cells.push(null);
     return cells;
   }, [month]);
 
   useEffect(() => {
-    // load today's data initially
     if (!hasToken) return;
     loadDay(toYMD(selected));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -63,9 +68,13 @@ export default function History() {
       setErr('');
       const data = await getDay(ymd);
       setDayData(data);
+      setNote(data.note || '');
+      setNoteMsg('');
     } catch (e) {
       setErr(e.message || 'Failed to load day');
       setDayData(null);
+      setNote('');
+      setNoteMsg('');
     } finally {
       setLoading(false);
     }
@@ -83,6 +92,28 @@ export default function History() {
     loadDay(toYMD(d));
   }
 
+  async function handleSaveNote() {
+    const ymd = toYMD(selected);
+    setNoteSaving(true);
+    setNoteMsg('');
+    try {
+      const trimmed = note.trim();
+      if (trimmed) {
+        await saveNote(ymd, trimmed);
+        setNote(trimmed);
+        setNoteMsg('Note saved');
+      } else {
+        await deleteNote(ymd);
+        setNote('');
+        setNoteMsg('Note cleared');
+      }
+    } catch (e) {
+      setNoteMsg(e.message || 'Failed to save note');
+    } finally {
+      setNoteSaving(false);
+    }
+  }
+
   const todayYMD = toYMD(new Date());
   const selectedYMD = toYMD(selected);
 
@@ -91,20 +122,24 @@ export default function History() {
       <Header />
       
       {/* Title */}
-      <div style={{
-        textAlign: 'center',
-        marginTop: '40px',
-        marginBottom: '20px',
-      }}>
-        <h1 style={{
-          fontSize: '32px',
-          fontWeight: 700,
-          color: '#0f172a',
-        }}>
+      <div
+        style={{
+          textAlign: 'center',
+          marginTop: '40px',
+          marginBottom: '20px',
+        }}
+      >
+        <h1
+          style={{
+            fontSize: '32px',
+            fontWeight: 700,
+            color: '#0f172a',
+          }}
+        >
           Meal History
         </h1>
         <p style={{ color: '#64748b' }}>
-          Select a date below to view your logged meals
+          Select a date below to view your logged meals and notes
         </p>
       </div>
 
@@ -113,16 +148,22 @@ export default function History() {
           {/* Calendar card */}
           <section className="auth-card history-card">
             <div className="cal-header">
-              <button className="cal-nav" onClick={prevMonth} aria-label="Previous month">‹</button>
+              <button className="cal-nav" onClick={prevMonth} aria-label="Previous month">
+                ‹
+              </button>
               <div className="cal-title">
                 {month.toLocaleString('en-US', { month: 'long' })} {month.getFullYear()}
               </div>
-              <button className="cal-nav" onClick={nextMonth} aria-label="Next month">›</button>
+              <button className="cal-nav" onClick={nextMonth} aria-label="Next month">
+                ›
+              </button>
             </div>
 
             <div className="cal-week">
               {WEEKDAYS.map((w) => (
-                <div key={w} className="cal-weekday">{w}</div>
+                <div key={w} className="cal-weekday">
+                  {w}
+                </div>
               ))}
             </div>
 
@@ -135,7 +176,9 @@ export default function History() {
                 return (
                   <button
                     key={idx}
-                    className={`cal-cell${isSelected ? ' selected' : ''}${isToday ? ' today' : ''}`}
+                    className={`cal-cell${isSelected ? ' selected' : ''}${
+                      isToday ? ' today' : ''
+                    }`}
                     onClick={() => selectDate(cell)}
                     aria-label={`Select ${ymd}`}
                   >
@@ -149,14 +192,19 @@ export default function History() {
           {/* Day details */}
           <section className="auth-card history-card">
             <h2 className="auth-title" style={{ marginBottom: 6 }}>
-              {toYMD(selected)}
+              {selectedYMD}
             </h2>
 
             {loading && <p className="feature-text" style={{ marginTop: 8 }}>Loading…</p>}
-            {err && !loading && <div className="form-error" style={{ marginTop: 8 }}>{err}</div>}
+            {err && !loading && (
+              <div className="form-error" style={{ marginTop: 8 }}>
+                {err}
+              </div>
+            )}
 
             {!loading && !err && dayData && (
               <>
+                {/* summary */}
                 <div className="day-summary">
                   <div className="sum-item">
                     <span className="sum-label">Total kcal</span>
@@ -168,13 +216,17 @@ export default function History() {
                       {dayData.user_targets.min_kcal != null && (
                         <div className="sum-item">
                           <span className="sum-label">Min target</span>
-                          <span className="sum-chip min">{dayData.user_targets.min_kcal}</span>
+                          <span className="sum-chip min">
+                            {dayData.user_targets.min_kcal}
+                          </span>
                         </div>
                       )}
                       {dayData.user_targets.max_kcal != null && (
                         <div className="sum-item">
                           <span className="sum-label">Max target</span>
-                          <span className="sum-chip max">{dayData.user_targets.max_kcal}</span>
+                          <span className="sum-chip max">
+                            {dayData.user_targets.max_kcal}
+                          </span>
                         </div>
                       )}
                       {dayData.status && (
@@ -188,9 +240,12 @@ export default function History() {
                   )}
                 </div>
 
-                <div className="day-list">
+                {/* list of foods */}
+                <div className="day-list" style={{ marginTop: 16 }}>
                   {dayData.items.length === 0 ? (
-                    <p className="feature-text" style={{ marginTop: 8 }}>No items for this day.</p>
+                    <p className="feature-text" style={{ marginTop: 8 }}>
+                      No items for this day.
+                    </p>
                   ) : (
                     <ul className="food-list">
                       {dayData.items.map((it) => (
@@ -202,6 +257,66 @@ export default function History() {
                       ))}
                     </ul>
                   )}
+                </div>
+
+                {/* note for this day */}
+                <div
+                  className="auth-card"
+                  style={{
+                    marginTop: 16,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
+                    background: '#f8fafc',
+                  }}
+                >
+                  <label
+                    htmlFor="history-note"
+                    style={{ fontWeight: 600, fontSize: 14 }}
+                  >
+                    Note for this day
+                  </label>
+                  <textarea
+                    id="history-note"
+                    rows={3}
+                    value={note}
+                    onChange={(e) => {
+                      setNote(e.target.value);
+                      setNoteMsg('');
+                    }}
+                    className="food-input"
+                    style={{ resize: 'vertical', minHeight: 70, background: '#fff' }}
+                    placeholder="Write how this day went, cravings, mood, or anything relevant."
+                  />
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginTop: 4,
+                    }}
+                  >
+                    {noteMsg && (
+                      <span
+                        style={{
+                          fontSize: 13,
+                          color: noteMsg.includes('Failed') ? '#ef4444' : '#0d9488',
+                          fontWeight: 500,
+                        }}
+                      >
+                        {noteMsg}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      style={{ padding: '8px 18px', fontSize: 14 }}
+                      onClick={handleSaveNote}
+                      disabled={noteSaving}
+                    >
+                      {noteSaving ? 'Saving…' : 'Save note'}
+                    </button>
+                  </div>
                 </div>
               </>
             )}

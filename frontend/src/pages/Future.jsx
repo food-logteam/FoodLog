@@ -4,6 +4,7 @@ import Header from '../components/Header.jsx';
 import { getCurrentUser } from '../lib/api.js';
 import { getDay, addFood, updateFood, deleteFood } from '../lib/day.js';
 import { searchFoods } from '../lib/foods.js';
+import { saveNote, deleteNote } from '../lib/notes.js';
 import { Plus, Trash2, Pencil, Check, X } from 'lucide-react';
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -30,6 +31,11 @@ export default function Future() {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
+
+  // note for selected date
+  const [note, setNote] = useState('');
+  const [noteSaving, setNoteSaving] = useState(false);
+  const [noteMsg, setNoteMsg] = useState('');
 
   // add form
   const [query, setQuery] = useState('');
@@ -78,9 +84,15 @@ export default function Future() {
       setItems(Array.isArray(data.items) ? data.items : []);
       setTotal(Number(data.total_kcal || 0));
       setStatus(data.status || null);
+      setNote(data.note || '');
+      setNoteMsg('');
     } catch (e) {
       setErr(e.message || 'Failed to load day');
-      setItems([]); setTotal(0); setStatus(null);
+      setItems([]);
+      setTotal(0);
+      setStatus(null);
+      setNote('');
+      setNoteMsg('');
     } finally {
       setLoading(false);
     }
@@ -169,6 +181,28 @@ export default function Future() {
     await deleteFood(item.id);
     setItems(prev => prev.filter(it => it.id !== item.id));
     await refreshTotals();
+  }
+
+  async function handleSaveNote() {
+    const ymd = toYMD(selected);
+    setNoteSaving(true);
+    setNoteMsg('');
+    try {
+      const trimmed = note.trim();
+      if (trimmed) {
+        await saveNote(ymd, trimmed);
+        setNote(trimmed);
+        setNoteMsg('Note saved');
+      } else {
+        await deleteNote(ymd);
+        setNote('');
+        setNoteMsg('Note cleared');
+      }
+    } catch (e) {
+      setNoteMsg(e.message || 'Failed to save note');
+    } finally {
+      setNoteSaving(false);
+    }
   }
 
   const todayYMD = toYMD(new Date());
@@ -370,6 +404,67 @@ export default function Future() {
                 </button>
               </div>
             </section>
+
+            
+            {/* note for this planned day */}
+            <div
+              className="auth-card"
+              style={{
+                marginTop: 16,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+                background: '#f8fafc',
+              }}
+            >
+              <label
+                htmlFor="future-note"
+                style={{ fontWeight: 600, fontSize: 14 }}
+              >
+                Note for this planned day
+              </label>
+              <textarea
+                id="future-note"
+                rows={3}
+                value={note}
+                onChange={(e) => {
+                  setNote(e.target.value);
+                  setNoteMsg('');
+                }}
+                className="food-input"
+                style={{ resize: 'vertical', minHeight: 70, background: '#fff' }}
+                placeholder="Write plan details: workouts, events, or why you chose these meals."
+              />
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginTop: 4,
+                }}
+              >
+                {noteMsg && (
+                  <span
+                    style={{
+                      fontSize: 13,
+                      color: noteMsg.includes('Failed') ? '#ef4444' : '#0d9488',
+                      fontWeight: 500,
+                    }}
+                  >
+                    {noteMsg}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  style={{ padding: '8px 18px', fontSize: 14 }}
+                  onClick={handleSaveNote}
+                  disabled={noteSaving}
+                >
+                  {noteSaving ? 'Saving…' : 'Save note'}
+                </button>
+              </div>
+            </div>
           </section>
         </div>
       </div>
