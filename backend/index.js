@@ -1,10 +1,6 @@
-// index.js – FoodLog backend (SQLite, Auth, Edamam search, Day Notes)
+// index.js – FoodLog backend (SQLite, Auth, Edamam search, Day Notes, Macros)
 // Node 20 LTS compatible. Uses built-in fetch.
-
-// Notes:
-// - Keep secrets in .env: EDAMAM_APP_ID, EDAMAM_APP_KEY, JWT_SECRET
-// - We expose only name (label) and kcal_100g from Edamam.
-// - DB model: users | consumed_foods | day_notes
+// Secrets in .env: EDAMAM_APP_ID, EDAMAM_APP_KEY, JWT_SECRET
 
 require("dotenv").config();
 const express = require("express");
@@ -31,7 +27,7 @@ const db = new sqlite3.Database(dbPath);
 
 // Create tables and indexes if not exist
 db.serialize(() => {
-  // users
+  // users table
   db.run(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,14 +41,18 @@ db.serialize(() => {
   `);
 
   // foods linked to users
+  // macros are stored per 100g: protein_100g, carbs_100g, fat_100g
   db.run(`
     CREATE TABLE IF NOT EXISTS consumed_foods (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
-      date TEXT NOT NULL,
-      name TEXT NOT NULL,
-      grams REAL NOT NULL,
-      kcal REAL NOT NULL,
+      date TEXT NOT NULL,           -- "YYYY-MM-DD"
+      name TEXT NOT NULL,           -- food name
+      grams REAL NOT NULL,          -- quantity in grams
+      kcal REAL NOT NULL,           -- total kcal for this entry
+      protein_100g REAL,            -- optional g protein per 100g
+      carbs_100g REAL,              -- optional g carbs per 100g
+      fat_100g REAL,                -- optional g fat per 100g
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
       FOREIGN KEY (user_id) REFERENCES users(id)
     )
@@ -83,6 +83,15 @@ db.all(`PRAGMA table_info(users)`, [], (err, rows) => {
   const names = rows.map(r => r.name);
   if (!names.includes("min_kcal")) db.run(`ALTER TABLE users ADD COLUMN min_kcal INTEGER`);
   if (!names.includes("max_kcal")) db.run(`ALTER TABLE users ADD COLUMN max_kcal INTEGER`);
+});
+
+// Lightweight migration to add macros columns if DB existed before
+db.all(`PRAGMA table_info(consumed_foods)`, [], (err, rows) => {
+  if (err) return;
+  const names = rows.map(r => r.name);
+  if (!names.includes("protein_100g")) db.run(`ALTER TABLE consumed_foods ADD COLUMN protein_100g REAL`);
+  if (!names.includes("carbs_100g")) db.run(`ALTER TABLE consumed_foods ADD COLUMN carbs_100g REAL`);
+  if (!names.includes("fat_100g")) db.run(`ALTER TABLE consumed_foods ADD COLUMN fat_100g REAL`);
 });
 
 // ===============================
@@ -137,22 +146,32 @@ async function edamamSearchFoods(q, { limit = 20, onlyGeneric = true } = {}) {
   const hints = Array.isArray(json.hints) ? json.hints : [];
   const seen = new Set();
   const out = [];
+
   for (const h of hints) {
     const food = h && h.food ? h.food : null;
     if (!food) continue;
     if (onlyGeneric && food.category !== "Generic foods") continue;
 
     const label = (food.label || "").trim();
-    const kcal = food.nutrients && typeof food.nutrients.ENERC_KCAL === "number"
-      ? Number(food.nutrients.ENERC_KCAL)
-      : null;
+    const nutrients = food.nutrients || {};
+    const kcal = typeof nutrients.ENERC_KCAL === "number" ? Number(nutrients.ENERC_KCAL) : null;
+    const protein = typeof nutrients.PROCNT === "number" ? Number(nutrients.PROCNT) : null;
+    const carbs = typeof nutrients.CHOCDF === "number" ? Number(nutrients.CHOCDF) : null;
+    const fat = typeof nutrients.FAT === "number" ? Number(nutrients.FAT) : null;
 
     if (!label || kcal == null) continue;
     const norm = label.toLowerCase();
     if (seen.has(norm)) continue;
     seen.add(norm);
 
-    out.push({ name: label, kcal_100g: Number(kcal.toFixed(1)) });
+    out.push({
+      name: label,
+      kcal_100g: Number(kcal.toFixed(1)),
+      protein_100g: protein != null ? Number(protein.toFixed(1)) : null,
+      carbs_100g: carbs != null ? Number(carbs.toFixed(1)) : null,
+      fat_100g: fat != null ? Number(fat.toFixed(1)) : null
+    });
+
     if (out.length >= limit) break;
   }
 
@@ -270,7 +289,11 @@ app.get("/day", requireAuth, (req, res) => {
   if (!date) return res.status(400).json({ error: "Missing date (format: YYYY-MM-DD)" });
 
   const listSql = `
-    SELECT id, name, grams, ROUND(kcal, 1) AS kcal
+    SELECT id, name, grams, 
+           ROUND(kcal, 1) AS kcal,
+           protein_100g,
+           carbs_100g,
+           fat_100g
     FROM consumed_foods
     WHERE user_id = ? AND date = ?
     ORDER BY id DESC
@@ -289,7 +312,7 @@ app.get("/day", requireAuth, (req, res) => {
     SELECT note
     FROM day_notes
     WHERE user_id = ? AND date = ?
-  `;
+ `;
 
   db.all(listSql, [req.user.id, date], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
@@ -323,20 +346,48 @@ app.get("/day", requireAuth, (req, res) => {
   });
 });
 
+// POST /day  Body: { date, name, grams, kcal_100g, protein_100g?, carbs_100g?, fat_100g? }
 app.post("/day", requireAuth, (req, res) => {
-  const { date, name, grams, kcal_100g } = req.body || {};
+  const {
+    date,
+    name,
+    grams,
+    kcal_100g,
+    protein_100g = null,
+    carbs_100g = null,
+    fat_100g = null
+  } = req.body || {};
+
   if (!date || !name || !grams || !kcal_100g)
     return res.status(400).json({ error: "Missing fields (date, name, grams, kcal_100g)" });
 
   const kcal = (Number(kcal_100g) / 100) * Number(grams);
-  const insert = `INSERT INTO consumed_foods (user_id, date, name, grams, kcal) VALUES (?, ?, ?, ?, ?)`;
+  const insert = `
+    INSERT INTO consumed_foods 
+      (user_id, date, name, grams, kcal, protein_100g, carbs_100g, fat_100g)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `;
 
-  db.run(insert, [req.user.id, date, name, grams, kcal], function (err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.status(201).json({ id: this.lastID, kcal: Number(kcal.toFixed(2)) });
-  });
+  db.run(
+    insert,
+    [
+      req.user.id,
+      date,
+      name,
+      grams,
+      kcal,
+      protein_100g != null ? Number(protein_100g) : null,
+      carbs_100g != null ? Number(carbs_100g) : null,
+      fat_100g != null ? Number(fat_100g) : null
+    ],
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.status(201).json({ id: this.lastID, kcal: Number(kcal.toFixed(2)) });
+    }
+  );
 });
 
+// PUT /day/:id  Body: { grams, kcal_100g }
 app.put("/day/:id", requireAuth, (req, res) => {
   const { grams, kcal_100g } = req.body || {};
   if (!grams || !kcal_100g)
@@ -351,6 +402,7 @@ app.put("/day/:id", requireAuth, (req, res) => {
   });
 });
 
+// DELETE /day/:id
 app.delete("/day/:id", requireAuth, (req, res) => {
   const del = `DELETE FROM consumed_foods WHERE id=? AND user_id=?`;
   db.run(del, [req.params.id, req.user.id], function (err) {
@@ -362,8 +414,6 @@ app.delete("/day/:id", requireAuth, (req, res) => {
 // ===============================
 // Day Notes routes (protected)
 // ===============================
-
-// GET /notes?date=YYYY-MM-DD  -> read note for a day
 app.get("/notes", requireAuth, (req, res) => {
   const { date } = req.query;
   if (!date) return res.status(400).json({ error: "Missing date (format: YYYY-MM-DD)" });
@@ -377,7 +427,6 @@ app.get("/notes", requireAuth, (req, res) => {
   );
 });
 
-// POST /notes  { date, note }  -> upsert (create or update the note for that day)
 app.post("/notes", requireAuth, (req, res) => {
   const { date, note } = req.body || {};
   if (!date || typeof note !== "string")
@@ -396,7 +445,6 @@ app.post("/notes", requireAuth, (req, res) => {
   });
 });
 
-// DELETE /notes?date=YYYY-MM-DD  -> delete note for that day
 app.delete("/notes", requireAuth, (req, res) => {
   const { date } = req.query;
   if (!date) return res.status(400).json({ error: "Missing date (format: YYYY-MM-DD)" });
@@ -411,7 +459,7 @@ app.delete("/notes", requireAuth, (req, res) => {
 });
 
 // ===============================
-// Edamam search routes (minimal, simplified)
+// Edamam search routes (foods + macros)
 // ===============================
 app.get("/foods/search", requireAuth, async (req, res) => {
   try {
