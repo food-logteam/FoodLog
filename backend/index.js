@@ -1,9 +1,10 @@
-// index.js – FoodLog backend (SQLite, Auth, Edamam search)
+// index.js – FoodLog backend (SQLite, Auth, Edamam search, Day Notes)
 // Node 20 LTS compatible. Uses built-in fetch.
+
 // Notes:
 // - Keep secrets in .env: EDAMAM_APP_ID, EDAMAM_APP_KEY, JWT_SECRET
-// - We only expose name (label) and kcal_100g from Edamam as requested.
-// - DB schema follows the simple daily-tracking model: date | name | grams | kcal.
+// - We expose only name (label) and kcal_100g from Edamam.
+// - DB model: users | consumed_foods | day_notes
 
 require("dotenv").config();
 const express = require("express");
@@ -22,12 +23,15 @@ const EDAMAM_APP_KEY = process.env.EDAMAM_APP_KEY || "";
 app.use(cors());
 app.use(express.json());
 
+// ===============================
 // SQLite database
+// ===============================
 const dbPath = path.join(__dirname, "foodlog.sqlite");
 const db = new sqlite3.Database(dbPath);
 
 // Create tables and indexes if not exist
 db.serialize(() => {
+  // users
   db.run(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,6 +44,7 @@ db.serialize(() => {
     )
   `);
 
+  // foods linked to users
   db.run(`
     CREATE TABLE IF NOT EXISTS consumed_foods (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,8 +58,23 @@ db.serialize(() => {
     )
   `);
 
+  // day notes (one note per user per date)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS day_notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      date TEXT NOT NULL,
+      note TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      UNIQUE(user_id, date),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `);
+
   db.run(`CREATE INDEX IF NOT EXISTS idx_cf_date ON consumed_foods(date)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_cf_user_date ON consumed_foods(user_id, date)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_dn_user_date ON day_notes(user_id, date)`);
 });
 
 // Lightweight migration to add min_kcal/max_kcal if DB existed before
@@ -65,7 +85,9 @@ db.all(`PRAGMA table_info(users)`, [], (err, rows) => {
   if (!names.includes("max_kcal")) db.run(`ALTER TABLE users ADD COLUMN max_kcal INTEGER`);
 });
 
+// ===============================
 // Helpers
+// ===============================
 function signToken(userId) {
   return jwt.sign({ sub: userId }, JWT_SECRET, { expiresIn: "7d" });
 }
@@ -85,10 +107,9 @@ function requireAuth(req, res, next) {
   return res.status(401).json({ error: "Missing Authorization header (Bearer token)" });
 }
 
-// Simple in-memory cache for Edamam lookups to reduce calls during development
-// Key: q string; Value: { t: epoch_ms, data }
+// Simple in-memory cache for Edamam lookups (dev only)
 const edamamCache = new Map();
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL_MS = 5 * 60 * 1000;
 
 async function edamamSearchFoods(q, { limit = 20, onlyGeneric = true } = {}) {
   const key = `${q}|${limit}|${onlyGeneric}`.toLowerCase();
@@ -114,8 +135,6 @@ async function edamamSearchFoods(q, { limit = 20, onlyGeneric = true } = {}) {
   const json = await r.json();
 
   const hints = Array.isArray(json.hints) ? json.hints : [];
-
-  // Map to minimal model and filter duplicates by normalized label
   const seen = new Set();
   const out = [];
   for (const h of hints) {
@@ -142,7 +161,9 @@ async function edamamSearchFoods(q, { limit = 20, onlyGeneric = true } = {}) {
   return result;
 }
 
+// ===============================
 // Auth routes
+// ===============================
 app.post("/auth/register", (req, res) => {
   const { name, email, password, min_kcal = null, max_kcal = null } = req.body || {};
   if (!name || !email || !password) {
@@ -190,7 +211,9 @@ app.post("/auth/login", (req, res) => {
   });
 });
 
-// Profile routes
+// ===============================
+// Profile routes (protected)
+// ===============================
 app.get("/me", requireAuth, (req, res) => {
   db.get(
     `SELECT id, name, email, min_kcal, max_kcal FROM users WHERE id = ?`,
@@ -230,14 +253,18 @@ app.put("/me", requireAuth, (req, res) => {
   });
 });
 
+// ===============================
 // Public routes
+// ===============================
 app.get("/health", (_, res) => {
   res.json({ ok: true, message: "FoodLog backend is alive" });
 });
 
 app.get("/", (_, res) => res.send("FoodLog API is running"));
 
-// Day routes (per user)
+// ===============================
+// Day routes (protected, per user)
+// ===============================
 app.get("/day", requireAuth, (req, res) => {
   const { date } = req.query;
   if (!date) return res.status(400).json({ error: "Missing date (format: YYYY-MM-DD)" });
@@ -258,9 +285,15 @@ app.get("/day", requireAuth, (req, res) => {
     FROM users
     WHERE id = ?
   `;
+  const noteSql = `
+    SELECT note
+    FROM day_notes
+    WHERE user_id = ? AND date = ?
+  `;
 
   db.all(listSql, [req.user.id, date], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
+
     db.get(totalSql, [req.user.id, date], (err2, totalRow) => {
       if (err2) return res.status(500).json({ error: err2.message });
       const total_kcal = totalRow ? totalRow.total_kcal : 0;
@@ -269,12 +302,22 @@ app.get("/day", requireAuth, (req, res) => {
         if (err3) return res.status(500).json({ error: err3.message });
         const targets = { min_kcal: u?.min_kcal ?? null, max_kcal: u?.max_kcal ?? null };
 
-        let status = null;
-        if (targets.min_kcal != null && total_kcal < targets.min_kcal) status = "below";
-        else if (targets.max_kcal != null && total_kcal > targets.max_kcal) status = "above";
-        else if (targets.min_kcal != null || targets.max_kcal != null) status = "within";
+        db.get(noteSql, [req.user.id, date], (err4, nrow) => {
+          if (err4) return res.status(500).json({ error: err4.message });
+          let status = null;
+          if (targets.min_kcal != null && total_kcal < targets.min_kcal) status = "below";
+          else if (targets.max_kcal != null && total_kcal > targets.max_kcal) status = "above";
+          else if (targets.min_kcal != null || targets.max_kcal != null) status = "within";
 
-        res.json({ date, items: rows, total_kcal, user_targets: targets, status });
+          res.json({
+            date,
+            items: rows,
+            total_kcal,
+            user_targets: targets,
+            status,
+            note: nrow ? nrow.note : null
+          });
+        });
       });
     });
   });
@@ -316,14 +359,66 @@ app.delete("/day/:id", requireAuth, (req, res) => {
   });
 });
 
-// Edamam search routes (minimal, exposing only name and kcal_100g)
-// GET /foods/search?query=apple&limit=20&onlyGeneric=true
+// ===============================
+// Day Notes routes (protected)
+// ===============================
+
+// GET /notes?date=YYYY-MM-DD  -> read note for a day
+app.get("/notes", requireAuth, (req, res) => {
+  const { date } = req.query;
+  if (!date) return res.status(400).json({ error: "Missing date (format: YYYY-MM-DD)" });
+  db.get(
+    `SELECT id, date, note FROM day_notes WHERE user_id = ? AND date = ?`,
+    [req.user.id, date],
+    (err, row) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json(row ? row : { date, note: null });
+    }
+  );
+});
+
+// POST /notes  { date, note }  -> upsert (create or update the note for that day)
+app.post("/notes", requireAuth, (req, res) => {
+  const { date, note } = req.body || {};
+  if (!date || typeof note !== "string")
+    return res.status(400).json({ error: "Missing fields (date, note)" });
+
+  const sql = `
+    INSERT INTO day_notes (user_id, date, note, created_at, updated_at)
+    VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    ON CONFLICT(user_id, date) DO UPDATE SET
+      note = excluded.note,
+      updated_at = excluded.updated_at
+  `;
+  db.run(sql, [req.user.id, date, note], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.status(201).json({ ok: true });
+  });
+});
+
+// DELETE /notes?date=YYYY-MM-DD  -> delete note for that day
+app.delete("/notes", requireAuth, (req, res) => {
+  const { date } = req.query;
+  if (!date) return res.status(400).json({ error: "Missing date (format: YYYY-MM-DD)" });
+  db.run(
+    `DELETE FROM day_notes WHERE user_id = ? AND date = ?`,
+    [req.user.id, date],
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ ok: true, deleted: this.changes });
+    }
+  );
+});
+
+// ===============================
+// Edamam search routes (minimal, simplified)
+// ===============================
 app.get("/foods/search", requireAuth, async (req, res) => {
   try {
     const query = (req.query.query || req.query.q || "").toString().trim();
     if (!query) return res.status(400).json({ error: "Missing query parameter" });
     const limit = req.query.limit ? Math.max(1, Math.min(50, Number(req.query.limit))) : 20;
-    const onlyGeneric = req.query.onlyGeneric !== "false"; // default true
+    const onlyGeneric = req.query.onlyGeneric !== "false";
 
     const result = await edamamSearchFoods(query, { limit, onlyGeneric });
     return res.json(result);
@@ -333,7 +428,6 @@ app.get("/foods/search", requireAuth, async (req, res) => {
 });
 
 // Utility: compute kcal from grams and kcal_100g (no DB change)
-// POST /utils/calc-kcal  Body: { grams, kcal_100g }
 app.post("/utils/calc-kcal", (req, res) => {
   const { grams, kcal_100g } = req.body || {};
   if (grams == null || kcal_100g == null)
@@ -342,7 +436,9 @@ app.post("/utils/calc-kcal", (req, res) => {
   res.json({ kcal: Number(kcal.toFixed(2)) });
 });
 
+// ===============================
 // Start server
+// ===============================
 app.listen(PORT, () => {
   console.log(`FoodLog backend running on http://localhost:${PORT}`);
 });
